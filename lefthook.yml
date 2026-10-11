@@ -1,0 +1,21 @@
+glob_matcher: doublestar
+
+pre-push:
+  jobs:
+    - name: format
+      glob: "**/*.rs"
+      run: mise run fmt-check
+    - name: lint
+      glob:
+        - "**/*.rs"
+        - Cargo.toml
+        - Cargo.lock
+        - mise.toml
+      run: mise run lint
+    - name: test
+      glob:
+        - "**/*.rs"
+        - Cargo.toml
+        - Cargo.lock
+        - mise.toml
+      run: mise run test
