@@ -1,0 +1,43 @@
+# This workflow is managed by gh actions-lock.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'mise.toml'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'mise.toml'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: gh extension install github/gh-actions-lock --pin v0.1.6
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: gh actions-lock --verify-local
+      - uses: jdx/mise-action@v4.3.0
+        with:
+          version: 2026.9.5
+          github_token: ${{ github.token }}
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run build

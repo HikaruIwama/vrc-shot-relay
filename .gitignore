@@ -1,0 +1,7 @@
+/target
+/node_modules/
+/config.toml
+/state.json
+/state.json.tmp
+/relay.log
+/.vrc-shot-relay.lock
