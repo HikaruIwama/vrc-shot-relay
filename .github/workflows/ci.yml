@@ -37,6 +37,7 @@ jobs:
         with:
           version: 2026.9.5
           github_token: ${{ github.token }}
+      - run: rustup component add rustfmt clippy
       - run: mise run fmt-check
       - run: mise run lint
       - run: mise run test
