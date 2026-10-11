@@ -30,6 +30,7 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'mise.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-
       - run: rustup component add rustfmt clippy
       - run: mise run fmt-check
       - run: mise run lint
