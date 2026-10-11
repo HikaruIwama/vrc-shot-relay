@@ -1,5 +1,5 @@
 [tools]
-lefthook = "2.1.17"
+lefthook = "2.2.1"
 rust = "1.99.0"
 
 [tasks]
