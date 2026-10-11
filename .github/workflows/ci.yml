@@ -21,7 +21,7 @@ jobs:
       - run: gh actions-lock --verify-local
       - uses: jdx/mise-action@v5.1.1
         with:
-          version: 2026.10.7
+          version: 2026.10.8
           github_token: ${{ github.token }}
       - run: rustup component add rustfmt clippy
       - run: mise run fmt-check
