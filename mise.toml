@@ -1,4 +1,5 @@
 [tools]
+cargo-deny = "0.20.2"
 lefthook = "2.2.1"
 rust = "1.99.0"
 
@@ -6,5 +7,6 @@ rust = "1.99.0"
 fmt = "cargo fmt --all"
 fmt-check = "cargo fmt --all -- --check"
 lint = "cargo clippy --locked --all-targets -- -D warnings"
+deny = "cargo deny check"
 test = "cargo test --locked"
 build = "cargo build --locked --release"

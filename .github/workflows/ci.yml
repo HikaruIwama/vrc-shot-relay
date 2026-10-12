@@ -34,5 +34,6 @@ jobs:
       - run: rustup component add rustfmt clippy
       - run: mise run fmt-check
       - run: mise run lint
+      - run: mise run deny
       - run: mise run test
       - run: mise run build
