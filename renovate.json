@@ -8,7 +8,6 @@
     },
     {
       "matchUpdateTypes": ["minor"],
-      "matchCurrentVersion": "!/^0/",
       "automerge": true
     }
   ]
