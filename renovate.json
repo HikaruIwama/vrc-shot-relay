@@ -4,6 +4,10 @@
   "lockFileMaintenance": { "enabled": true },
   "packageRules": [
     {
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "bump"
+    },
+    {
       "matchUpdateTypes": ["patch"],
       "automerge": true
     },
