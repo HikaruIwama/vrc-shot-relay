@@ -1,7 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "lockFileMaintenance": { "enabled": true },
   "packageRules": [
+    {
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "bump"
+    },
     {
       "matchUpdateTypes": ["patch"],
       "automerge": true
