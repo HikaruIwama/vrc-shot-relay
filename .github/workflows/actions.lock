@@ -7,6 +7,9 @@ workflows:
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@v5.2.0'
+    '.github/workflows/release.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'jdx/mise-action@v5.2.0'
 dependencies:
     'actions/cache@v6.1.0':
         ref: 'v6.1.0'

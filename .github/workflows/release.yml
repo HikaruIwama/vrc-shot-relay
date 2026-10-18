@@ -1,0 +1,89 @@
+# This workflow is managed by gh actions-lock.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v5.2.0
+        with:
+          version: 2026.10.11
+          github_token: ${{ github.token }}
+      - name: Verify release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $package = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq 'vrc-shot-relay'
+          if ($env:RELEASE_TAG -ne "v$($package.version)") {
+            throw "Tag $env:RELEASE_TAG does not match Cargo.toml version $($package.version)"
+          }
+          git fetch origin main
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not fetch main'
+          }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Release tag must point to a commit on main'
+          }
+      - run: mise run fmt-check
+      - run: mise run lint
+      - run: mise run deny
+      - run: mise run test
+      - run: mise run build
+      - name: Package release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $name = "vrc-shot-relay-$env:RELEASE_TAG-windows-x64"
+          $directory = Join-Path 'target' $name
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Copy-Item -LiteralPath 'target/release/vrc-shot-relay.exe' -Destination $directory
+          Copy-Item -LiteralPath 'LICENSE' -Destination $directory
+          Copy-Item -LiteralPath 'config.example.toml' -Destination (Join-Path $directory 'config.toml')
+          $packages = (cargo metadata --locked --format-version 1 | ConvertFrom-Json).packages
+          $notices = foreach ($package in $packages) {
+            if ($package.source -and (Test-Path -LiteralPath $package.manifest_path)) {
+              Get-ChildItem -LiteralPath (Split-Path $package.manifest_path) -File | Where-Object { $_.Name -match '^NOTICE(\.|$)' } | ForEach-Object { "$($package.name) $($package.version): $($_.Name)" }
+            }
+          }
+          if ($notices) {
+            throw "Dependency NOTICE files need manual review: $($notices -join ', ')"
+          }
+          mise exec -- cargo about generate --locked --fail --target x86_64-pc-windows-msvc --output-file (Join-Path $directory 'CREDITS') about.hbs
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not generate CREDITS'
+          }
+          if ((Get-Item -LiteralPath (Join-Path $directory 'CREDITS')).Length -eq 0) {
+            throw 'CREDITS is empty'
+          }
+          $archive = Join-Path 'target' "$name.zip"
+          Compress-Archive -Path (Join-Path $directory '*') -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content -LiteralPath 'target/checksums.txt'
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $name = "vrc-shot-relay-$env:RELEASE_TAG-windows-x64"
+          gh release create $env:RELEASE_TAG "target/$name.zip" 'target/checksums.txt' --verify-tag --title "VRC Shot Relay $env:RELEASE_TAG" --generate-notes
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not publish release'
+          }
