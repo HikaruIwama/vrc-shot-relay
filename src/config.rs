@@ -44,9 +44,19 @@ pub fn load_or_create(directory: &Path) -> Result<Config, String> {
     toml::from_str(&text).map_err(|error| format!("Invalid config.toml: {error}"))
 }
 
-pub fn webhook_url(config: &Config) -> Result<Option<reqwest::Url>, String> {
-    if config.webhook_url.is_empty() {
-        return Ok(None);
+pub fn validate_watch_folder(folder: &Path) -> Result<(), String> {
+    fs::read_dir(folder).map_err(|error| {
+        format!(
+            "Could not read photo folder:\n{}\n\n{error}\n\nCheck watch_folder in config.toml or the photo save location in VRChat.",
+            folder.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub fn webhook_url(config: &Config) -> Result<reqwest::Url, String> {
+    if config.webhook_url.trim().is_empty() {
+        return Err("Webhook URL is not set. Set webhook_url in config.toml, then restart.".into());
     }
     let url =
         reqwest::Url::parse(&config.webhook_url).map_err(|_| "Invalid Webhook URL".to_string())?;
@@ -60,12 +70,66 @@ pub fn webhook_url(config: &Config) -> Result<Option<reqwest::Url>, String> {
     {
         return Err("Webhook URL must be a Discord HTTPS webhook".into());
     }
-    Ok(Some(url))
+    Ok(url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_webhook_prevents_startup() {
+        assert!(webhook_url(&Config::default()).is_err());
+    }
+
+    #[test]
+    fn missing_photo_folder_prevents_startup_without_creating_it() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let folder = std::env::temp_dir().join(format!("vrc-shot-relay-missing-{stamp}"));
+
+        let result = validate_watch_folder(&folder);
+
+        assert!(result.is_err());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn file_cannot_be_used_as_photo_folder() {
+        let file = std::env::current_exe().unwrap();
+
+        assert!(validate_watch_folder(&file).is_err());
+    }
+
+    #[test]
+    fn readable_photo_folder_allows_startup() {
+        assert!(validate_watch_folder(&std::env::temp_dir()).is_ok());
+    }
+
+    #[test]
+    fn invalid_webhook_prevents_startup() {
+        let config = Config {
+            webhook_url: "not a URL".into(),
+            ..Config::default()
+        };
+
+        assert!(webhook_url(&config).is_err());
+    }
+
+    #[test]
+    fn valid_webhook_allows_startup() {
+        let config = Config {
+            webhook_url: "https://discord.com/api/webhooks/123/token".into(),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            webhook_url(&config).unwrap().as_str(),
+            "https://discord.com/api/webhooks/123/token"
+        );
+    }
 
     #[test]
     fn empty_folder_prefers_vrchat_setting() {

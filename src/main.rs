@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod dialog;
 mod instance;
 mod tray;
 
@@ -21,11 +22,9 @@ fn main() {
     };
     let (ui_tx, ui_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
-    let startup = (|| -> Result<Option<(reqwest::Url, PathBuf)>, String> {
+    let startup = (|| -> Result<engine::Engine, String> {
         let config = config::load_or_create(&directory)?;
-        let Some(url) = config::webhook_url(&config)? else {
-            return Ok(None);
-        };
+        let url = config::webhook_url(&config)?;
         let folder = if config.watch_folder.is_empty() {
             let pictures = pictures_folder()?;
             let vrchat_config = read_vrchat_config()?;
@@ -33,36 +32,32 @@ fn main() {
         } else {
             config::resolve_watch_folder(&config, None, std::path::Path::new(""))?
         };
-        Ok(Some((url, folder)))
+        config::validate_watch_folder(&folder)?;
+        engine::prepare(folder, directory.clone(), url)
     })();
-    let (sender, initial_status) = match startup {
-        Ok(Some((url, folder))) => {
-            let events = ui_tx.clone();
-            let work_directory = directory.clone();
-            std::thread::spawn(move || {
-                if let Err(error) = engine::run(
-                    folder,
-                    work_directory.clone(),
-                    url,
-                    command_rx,
-                    events.clone(),
-                ) {
-                    engine::report_error(&work_directory, &events, &error);
-                }
-            });
-            (Some(command_tx), "Starting".to_string())
-        }
-        Ok(None) => (
-            None,
-            "Set webhook_url in config.toml, then restart".to_string(),
-        ),
+    let engine = match startup {
+        Ok(engine) => engine,
         Err(error) => {
-            engine::report_error(&directory, &ui_tx, &error);
-            (None, "Configuration error".to_string())
+            engine::log_error(&directory, &error);
+            dialog::show_startup_error(&format!(
+                "{error}\n\nCheck the settings in:\n{}\n\nCorrect the problem, then restart VRC Shot Relay.",
+                directory.join("config.toml").display()
+            ));
+            return;
         }
     };
-    if let Err(error) = tray::run(sender, ui_rx, initial_status) {
-        engine::report_error(&directory, &ui_tx, &format!("Tray error: {error}"));
+    let events = ui_tx.clone();
+    let work_directory = directory.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = engine::run(engine, command_rx, events.clone()) {
+            engine::report_error(&work_directory, &events, &error);
+        }
+    });
+    if let Err(error) = tray::run(command_tx.clone(), ui_rx, "Starting".to_string()) {
+        let _ = command_tx.send(engine::Command::Stop);
+        let error = format!("Could not start tray: {error}");
+        engine::log_error(&directory, &error);
+        dialog::show_startup_error(&error);
     }
 }
 

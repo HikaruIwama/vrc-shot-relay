@@ -1,7 +1,7 @@
 use crate::{discord, metadata, photo, queue::Queue, watch};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
@@ -18,23 +18,49 @@ pub enum UiEvent {
     Error(String),
 }
 
-pub fn run(
+pub struct Engine {
     folder: PathBuf,
     directory: PathBuf,
-    url: reqwest::Url,
-    commands: Receiver<Command>,
-    ui: Sender<UiEvent>,
-) -> Result<(), String> {
-    fs::create_dir_all(&folder)
-        .map_err(|error| format!("Could not access watch folder: {error}"))?;
+    seen: HashSet<PathBuf>,
+    queue: Queue,
+    discord: discord::Discord,
+    watcher: notify::RecommendedWatcher,
+    events_rx: Receiver<notify::Result<notify::Event>>,
+    ready_at: HashMap<PathBuf, Instant>,
+}
+
+pub fn prepare(folder: PathBuf, directory: PathBuf, url: reqwest::Url) -> Result<Engine, String> {
     let mut seen = HashSet::new();
     watch::discover_images(&folder, &mut seen)?;
     let mut queue = Queue::load(&directory.join("state.json"))?;
     let discord = discord::Discord::new(url)?;
-    let (_watcher, events_rx) = watch::start(&folder)?;
+    let (watcher, events_rx) = watch::start(&folder)?;
     let mut ready_at = HashMap::new();
-    let mut stability = watch::FileStability::default();
     add_new_photos(&folder, &mut seen, &mut queue, &mut ready_at)?;
+    Ok(Engine {
+        folder,
+        directory,
+        seen,
+        queue,
+        discord,
+        watcher,
+        events_rx,
+        ready_at,
+    })
+}
+
+pub fn run(engine: Engine, commands: Receiver<Command>, ui: Sender<UiEvent>) -> Result<(), String> {
+    let Engine {
+        folder,
+        directory,
+        mut seen,
+        mut queue,
+        discord,
+        watcher: _watcher,
+        events_rx,
+        mut ready_at,
+    } = engine;
+    let mut stability = watch::FileStability::default();
     let _ = ui.send(UiEvent::Status("Watching photos".into()));
     let mut paused = false;
     let mut next_attempt = Instant::now();
@@ -139,6 +165,11 @@ fn retry_delay(failures: u32) -> Duration {
 }
 
 pub fn report_error(directory: &Path, ui: &Sender<UiEvent>, error: &str) {
+    log_error(directory, error);
+    let _ = ui.send(UiEvent::Error(error.into()));
+}
+
+pub fn log_error(directory: &Path, error: &str) {
     if let Ok(mut log) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -149,5 +180,4 @@ pub fn report_error(directory: &Path, ui: &Sender<UiEvent>, error: &str) {
             .unwrap_or_else(|_| "unknown-time".into());
         let _ = writeln!(log, "{timestamp} {error}");
     }
-    let _ = ui.send(UiEvent::Error(error.into()));
 }
