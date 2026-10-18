@@ -55,7 +55,8 @@ fn start_engine(
     let url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/api/webhooks/test")).unwrap();
     let folder = root.join("photos");
     let directory = root.to_owned();
-    let worker = thread::spawn(move || engine::run(folder, directory, url, commands_rx, ui_tx));
+    let engine = engine::prepare(folder, directory, url).unwrap();
+    let worker = thread::spawn(move || engine::run(engine, commands_rx, ui_tx));
     assert!(matches!(
         ui_rx.recv_timeout(Duration::from_secs(5)),
         Ok(UiEvent::Status(_))
@@ -80,6 +81,31 @@ fn pending_photos(root: &Path) -> Vec<PathBuf> {
         .iter()
         .map(|value| PathBuf::from(value.as_str().unwrap()))
         .collect()
+}
+
+#[test]
+fn invalid_queue_is_reported_before_watching_photos() {
+    let root = test_directory("invalid-queue");
+    fs::write(root.join("state.json"), "invalid JSON").unwrap();
+    let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
+
+    let result = engine::prepare(root.join("photos"), root.clone(), url);
+
+    assert!(result.is_err_and(|error| error.starts_with("Invalid state file:")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_folder_is_reported_before_watching_photos() {
+    let root = test_directory("missing-folder");
+    let folder = root.join("missing");
+    let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
+
+    let result = engine::prepare(folder.clone(), root.clone(), url);
+
+    assert!(result.is_err_and(|error| error.starts_with("Could not scan photos:")));
+    assert!(!folder.exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

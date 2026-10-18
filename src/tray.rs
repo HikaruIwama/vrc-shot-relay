@@ -16,14 +16,14 @@ const EXIT_ID: usize = 2;
 static STATE: OnceLock<Mutex<TrayState>> = OnceLock::new();
 
 struct TrayState {
-    sender: Option<Sender<Command>>,
+    sender: Sender<Command>,
     events: Receiver<UiEvent>,
     status: String,
     paused: bool,
 }
 
 pub fn run(
-    sender: Option<Sender<Command>>,
+    sender: Sender<Command>,
     events: Receiver<UiEvent>,
     status: String,
 ) -> Result<(), String> {
@@ -102,9 +102,7 @@ unsafe extern "system" fn window_proc(
                 match id {
                     PAUSE_ID => {
                         state.paused = !state.paused;
-                        if let Some(sender) = &state.sender {
-                            let _ = sender.send(Command::Pause(state.paused));
-                        }
+                        let _ = state.sender.send(Command::Pause(state.paused));
                         state.status = if state.paused {
                             "Paused"
                         } else {
@@ -114,9 +112,7 @@ unsafe extern "system" fn window_proc(
                         update_tip(hwnd, &state.status);
                     }
                     EXIT_ID => {
-                        if let Some(sender) = &state.sender {
-                            let _ = sender.send(Command::Stop);
-                        }
+                        let _ = state.sender.send(Command::Stop);
                         let _ = unsafe { DestroyWindow(hwnd) };
                     }
                     _ => {}
@@ -192,22 +188,17 @@ fn show_error(hwnd: HWND, error: &str) {
 
 fn show_menu(hwnd: HWND) {
     let Some(state) = STATE.get() else { return };
-    let (status, can_pause, paused) = {
+    let (status, paused) = {
         let state = state.lock().unwrap();
-        (state.status.clone(), state.sender.is_some(), state.paused)
+        (state.status.clone(), state.paused)
     };
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let status: Vec<u16> = status.encode_utf16().chain(Some(0)).collect();
         let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(status.as_ptr()));
-        let flags = if can_pause {
-            MF_STRING
-        } else {
-            MF_STRING | MF_GRAYED
-        };
         let _ = AppendMenuW(
             menu,
-            flags,
+            MF_STRING,
             PAUSE_ID,
             if paused { w!("Resume") } else { w!("Pause") },
         );
