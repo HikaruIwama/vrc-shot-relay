@@ -2,10 +2,8 @@
 
 A tray app that posts new VRChat photos to Discord, with world info when available.
 
-## Setup
+1. Download the Windows ZIP from [Releases](https://github.com/HikaruIwama/vrc-shot-relay/releases) and extract it.
+2. Open `config.toml` and set `webhook_url` to your Discord webhook URL.
+3. Run `vrc-shot-relay.exe`.
 
-1. Build the app with `mise install` and `mise run build`.
-2. Copy `config.example.toml` to `target/release/config.toml` and set `webhook_url`.
-3. Run `target/release/vrc-shot-relay.exe`.
-
-Leave `watch_folder = ""` for automatic detection. Keep `config.toml` private because it contains your webhook URL.
+Leave `watch_folder` empty to detect your VRChat photo folder automatically.
