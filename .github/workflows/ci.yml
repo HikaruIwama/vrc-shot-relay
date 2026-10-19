@@ -21,7 +21,7 @@ jobs:
       - run: gh actions-lock --verify
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: jdx/mise-action@v5.2.0
+      - uses: jdx/mise-action@v5.2.1
         with:
           version: 2026.10.15
           github_token: ${{ github.token }}
