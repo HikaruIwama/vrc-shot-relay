@@ -34,6 +34,7 @@ pub fn prepare(folder: PathBuf, directory: PathBuf, url: reqwest::Url) -> Result
     watch::discover_images(&folder, &mut seen)?;
     let mut queue = Queue::load(&directory.join("state.json"))?;
     let discord = discord::Discord::new(url)?;
+    discord.verify()?;
     let (watcher, events_rx) = watch::start(&folder)?;
     let mut ready_at = HashMap::new();
     add_new_photos(&folder, &mut seen, &mut queue, &mut ready_at)?;
