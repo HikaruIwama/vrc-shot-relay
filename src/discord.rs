@@ -54,10 +54,34 @@ pub struct Discord {
 impl Discord {
     pub fn new(url: reqwest::Url) -> Result<Self, String> {
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(45))
             .build()
             .map_err(|error| error.to_string())?;
         Ok(Self { client, url })
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        let response = self
+            .client
+            .get(self.url.clone())
+            .timeout(Duration::from_secs(10))
+            .send()
+            .map_err(|error| {
+                if error.is_timeout() {
+                    "Could not verify Discord webhook: request timed out. Check your connection, then restart.".to_string()
+                } else {
+                    "Could not verify Discord webhook: network request failed. Check your connection, then restart.".to_string()
+                }
+            })?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Could not verify Discord webhook: HTTP {}. Check webhook_url in config.toml, then restart.",
+                response.status().as_u16()
+            ))
+        }
     }
 
     pub fn send(

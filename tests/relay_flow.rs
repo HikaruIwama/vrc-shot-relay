@@ -32,6 +32,16 @@ fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
     (request_line, body)
 }
 
+fn accept_verification(listener: &TcpListener) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let (request, body) = read_request(&mut stream);
+    assert_eq!(request, "GET /api/webhooks/test HTTP/1.1\r\n");
+    assert!(body.is_empty());
+    stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+        .unwrap();
+}
+
 fn test_directory(name: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -84,6 +94,118 @@ fn pending_photos(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+fn rejected_webhook_prevents_startup_without_posting() {
+    for status in [401, 403, 404, 429, 500] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 {status} Rejected\r\nContent-Length: 10\r\n\r\ntest-token"
+            )
+            .unwrap();
+            request
+        });
+        let root = test_directory("rejected-webhook");
+        let url = reqwest::Url::parse(&format!(
+            "http://127.0.0.1:{port}/api/webhooks/123/test-token"
+        ))
+        .unwrap();
+
+        let result = engine::prepare(root.join("photos"), root.clone(), url);
+
+        assert!(
+            matches!(result, Err(error) if error == format!("Could not verify Discord webhook: HTTP {status}. Check webhook_url in config.toml, then restart."))
+        );
+        let (request, body) = server.join().unwrap();
+        assert_eq!(request, "GET /api/webhooks/123/test-token HTTP/1.1\r\n");
+        assert!(body.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn unreachable_webhook_prevents_startup_without_exposing_url() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let root = test_directory("unreachable-webhook");
+    let url = reqwest::Url::parse(&format!(
+        "http://127.0.0.1:{port}/api/webhooks/123/test-token"
+    ))
+    .unwrap();
+
+    let result = engine::prepare(root.join("photos"), root.clone(), url);
+
+    assert!(
+        matches!(result, Err(error) if error == "Could not verify Discord webhook: network request failed. Check your connection, then restart.")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unresponsive_webhook_prevents_startup_with_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (finish_tx, finish_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request(&mut stream);
+        finish_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        request
+    });
+    let root = test_directory("unresponsive-webhook");
+    let url = reqwest::Url::parse(&format!(
+        "http://127.0.0.1:{port}/api/webhooks/123/test-token"
+    ))
+    .unwrap();
+
+    let result = engine::prepare(root.join("photos"), root.clone(), url);
+
+    finish_tx.send(()).unwrap();
+    let (request, body) = server.join().unwrap();
+    assert_eq!(request, "GET /api/webhooks/123/test-token HTTP/1.1\r\n");
+    assert!(body.is_empty());
+    assert!(
+        matches!(result, Err(error) if error == "Could not verify Discord webhook: request timed out. Check your connection, then restart.")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn webhook_redirect_is_rejected_without_following_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let redirect_port = destination.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+        write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{redirect_port}/test-token\r\nContent-Length: 0\r\n\r\n").unwrap();
+    });
+    let root = test_directory("redirect-webhook");
+    let url = reqwest::Url::parse(&format!(
+        "http://127.0.0.1:{port}/api/webhooks/123/test-token"
+    ))
+    .unwrap();
+
+    let result = engine::prepare(root.join("photos"), root.clone(), url);
+
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(error) if error == "Could not verify Discord webhook: HTTP 302. Check webhook_url in config.toml, then restart.")
+    );
+    destination.set_nonblocking(true).unwrap();
+    assert_eq!(
+        destination.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn invalid_queue_is_reported_before_watching_photos() {
     let root = test_directory("invalid-queue");
     fs::write(root.join("state.json"), "invalid JSON").unwrap();
@@ -114,6 +236,7 @@ fn newly_created_photo_reaches_webhook_and_leaves_queue() {
     let port = listener.local_addr().unwrap().port();
     let (request_tx, request_rx) = mpsc::channel();
     let server = thread::spawn(move || {
+        accept_verification(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let request = read_request(&mut stream);
         stream
@@ -151,6 +274,7 @@ fn rate_limited_photo_is_retried_and_completed() {
     let (request_tx, request_rx) = mpsc::channel();
     let (respond_tx, respond_rx) = mpsc::channel();
     let server = thread::spawn(move || {
+        accept_verification(&listener);
         let (mut first, _) = listener.accept().unwrap();
         let first_request = read_request(&mut first);
         let first_response_at = Instant::now();
