@@ -41,7 +41,20 @@ pub fn load_or_create(directory: &Path) -> Result<Config, String> {
     }
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("Could not read config.toml: {error}"))?;
-    toml::from_str(&text).map_err(|error| format!("Invalid config.toml: {error}"))
+    toml::from_str(&text).map_err(|error: toml::de::Error| {
+        let Some(before) = error.span().and_then(|span| text.get(..span.start)) else {
+            return "Invalid config.toml".to_string();
+        };
+        let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count()
+            + 1;
+        format!("Invalid config.toml at line {line}, column {column}")
+    })
 }
 
 pub fn validate_watch_folder(folder: &Path) -> Result<(), String> {
@@ -179,6 +192,52 @@ mod tests {
         let config: Config = toml::from_str(text).unwrap();
 
         assert_eq!(config.watch_folder, "");
+    }
+
+    #[test]
+    fn malformed_webhook_reports_location_without_config_contents() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("vrc-shot-relay-invalid-config-{stamp}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("config.toml"),
+            "\nwebhook_url = \"https://discord.com/api/webhooks/123/dummy-token\n",
+        )
+        .unwrap();
+
+        let result = load_or_create(&directory);
+        fs::remove_dir_all(&directory).unwrap();
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Invalid config.toml at line 2, column 64"
+        );
+    }
+
+    #[test]
+    fn invalid_webhook_type_reports_location_without_config_contents() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("vrc-shot-relay-config-type-{stamp}"));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("config.toml"),
+            "\r\nwebhook_url = ['https://discord.com/api/webhooks/123/dummy-token']\r\n",
+        )
+        .unwrap();
+
+        let result = load_or_create(&directory);
+        fs::remove_dir_all(&directory).unwrap();
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Invalid config.toml at line 2, column 15"
+        );
     }
 
     #[test]
