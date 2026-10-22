@@ -3,6 +3,38 @@ use image::{ImageDecoder, ImageEncoder};
 const JPEG_SEGMENT_PAYLOAD_LIMIT: usize = 65_533;
 const JPEG_XMP_HEADER: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 
+pub(crate) fn move_png_xmp_before_idat(bytes: &mut [u8]) -> Result<(), String> {
+    let mut offset = 8;
+    let mut insertion = None;
+    while offset < bytes.len() {
+        let remaining = &bytes[offset..];
+        let header = remaining.get(..8).ok_or("Truncated PNG chunk header")?;
+        let length = usize::try_from(u32::from_be_bytes([
+            header[0], header[1], header[2], header[3],
+        ]))
+        .map_err(|error| error.to_string())?;
+        let chunk_length = length.checked_add(12).ok_or("PNG chunk is too large")?;
+        let chunk = remaining.get(..chunk_length).ok_or("Truncated PNG chunk")?;
+        let kind = &header[4..8];
+        if kind == b"IEND" {
+            break;
+        }
+        if kind == b"IDAT" && insertion.is_none() {
+            insertion = Some(offset);
+        }
+        if kind == b"iTXt"
+            && chunk[8..chunk_length - 4].starts_with(b"XML:com.adobe.xmp\0")
+            && let Some(start) = insertion
+        {
+            // The image decoder only reads metadata before the first IDAT.
+            bytes[start..offset + chunk_length].rotate_right(chunk_length);
+            insertion = Some(start + chunk_length);
+        }
+        offset += chunk_length;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(crate) struct PhotoMetadata {
     exif: Option<Vec<u8>>,

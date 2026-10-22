@@ -1,4 +1,4 @@
-use crate::photo_metadata::PhotoMetadata;
+use crate::photo_metadata::{PhotoMetadata, move_png_xmp_before_idat};
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -63,7 +63,7 @@ pub fn prepare_file(path: &Path, preserve_metadata: bool) -> Result<PreparedPhot
 }
 
 fn prepare_bytes(
-    bytes: Vec<u8>,
+    mut bytes: Vec<u8>,
     preserve_metadata: bool,
     limit: usize,
 ) -> Result<PreparedPhoto, String> {
@@ -84,6 +84,9 @@ fn prepare_bytes(
             extension,
         });
     }
+    if preserve_metadata && format == ImageFormat::Png {
+        move_png_xmp_before_idat(&mut bytes)?;
+    }
     let mut decoder = ImageReader::with_format(Cursor::new(bytes), format)
         .into_decoder()
         .map_err(|error| format!("Could not open photo: {error}"))?;
@@ -102,6 +105,61 @@ mod tests {
     use super::*;
     use image::{GenericImageView, ImageBuffer, Rgba};
     use image::{ImageDecoder, ImageEncoder, ImageReader};
+
+    #[test]
+    fn conversion_preserves_xmp_after_idat() {
+        for (fixture, limit, mime) in [
+            (
+                include_bytes!("../tests/fixtures/metadata-rgb.png").as_slice(),
+                10_000,
+                "image/jpeg",
+            ),
+            (
+                include_bytes!("../tests/fixtures/metadata-rgba.png").as_slice(),
+                8_000,
+                "image/png",
+            ),
+        ] {
+            let mut decoder = ImageReader::new(Cursor::new(fixture))
+                .with_guessed_format()
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            let expected = decoder.xmp_metadata().unwrap().unwrap();
+            let mut original = fixture.to_vec();
+            let mut offset = 8;
+            let mut xmp_chunk = None;
+            while offset < original.len() {
+                let length = usize::try_from(u32::from_be_bytes(
+                    original[offset..offset + 4].try_into().unwrap(),
+                ))
+                .unwrap();
+                let end = offset + length + 12;
+                if &original[offset + 4..offset + 8] == b"iTXt"
+                    && original[offset + 8..end - 4].starts_with(b"XML:com.adobe.xmp\0")
+                {
+                    xmp_chunk = Some(original.drain(offset..end).collect::<Vec<_>>());
+                    break;
+                }
+                offset = end;
+            }
+            let iend = original.len() - 12;
+            original.splice(iend..iend, xmp_chunk.unwrap());
+            assert!(original.len() > limit);
+            assert!(image::load_from_memory(&original).is_ok());
+
+            let result = prepare_bytes(original, true, limit).unwrap();
+
+            let mut output = ImageReader::new(Cursor::new(&result.bytes))
+                .with_guessed_format()
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            assert_eq!(result.mime, mime);
+            assert!(result.bytes.len() <= limit);
+            assert_eq!(output.xmp_metadata().unwrap(), Some(expected));
+        }
+    }
 
     #[test]
     fn exif_larger_than_a_jpeg_segment_is_preserved_in_png() {
