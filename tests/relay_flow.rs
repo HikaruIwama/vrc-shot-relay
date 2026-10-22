@@ -55,6 +55,7 @@ fn test_directory(name: &str) -> PathBuf {
 fn start_engine(
     root: &Path,
     port: u16,
+    preserve_metadata: bool,
 ) -> (
     Sender<Command>,
     Receiver<UiEvent>,
@@ -65,7 +66,7 @@ fn start_engine(
     let url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/api/webhooks/test")).unwrap();
     let folder = root.join("photos");
     let directory = root.to_owned();
-    let engine = engine::prepare(folder, directory, url).unwrap();
+    let engine = engine::prepare(folder, directory, url, preserve_metadata).unwrap();
     let worker = thread::spawn(move || engine::run(engine, commands_rx, ui_tx));
     assert!(matches!(
         ui_rx.recv_timeout(Duration::from_secs(5)),
@@ -114,7 +115,7 @@ fn rejected_webhook_prevents_startup_without_posting() {
         ))
         .unwrap();
 
-        let result = engine::prepare(root.join("photos"), root.clone(), url);
+        let result = engine::prepare(root.join("photos"), root.clone(), url, false);
 
         assert!(
             matches!(result, Err(error) if error == format!("Could not verify Discord webhook: HTTP {status}. Check webhook_url in config.toml, then restart."))
@@ -137,7 +138,7 @@ fn unreachable_webhook_prevents_startup_without_exposing_url() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, false);
 
     assert!(
         matches!(result, Err(error) if error == "Could not verify Discord webhook: network request failed. Check your connection, then restart.")
@@ -162,7 +163,7 @@ fn unresponsive_webhook_prevents_startup_with_timeout() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, false);
 
     finish_tx.send(()).unwrap();
     let (request, body) = server.join().unwrap();
@@ -191,7 +192,7 @@ fn webhook_redirect_is_rejected_without_following_it() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, false);
 
     server.join().unwrap();
     assert!(
@@ -211,7 +212,7 @@ fn invalid_queue_is_reported_before_watching_photos() {
     fs::write(root.join("state.json"), "invalid JSON").unwrap();
     let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, false);
 
     assert!(result.is_err_and(|error| error.starts_with("Invalid state file:")));
     fs::remove_dir_all(root).unwrap();
@@ -223,11 +224,56 @@ fn missing_folder_is_reported_before_watching_photos() {
     let folder = root.join("missing");
     let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
 
-    let result = engine::prepare(folder.clone(), root.clone(), url);
+    let result = engine::prepare(folder.clone(), root.clone(), url, false);
 
     assert!(result.is_err_and(|error| error.starts_with("Could not scan photos:")));
     assert!(!folder.exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn metadata_setting_controls_attachment_without_changing_world_embed() {
+    let original = include_bytes!("fixtures/metadata-rgb.png");
+    for preserve_metadata in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            accept_verification(&listener);
+            let (mut stream, _) = listener.accept().unwrap();
+            let (_, body) = read_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            request_tx.send(body).unwrap();
+        });
+        let root = test_directory("metadata-setting");
+        let (commands_tx, ui_rx, worker) = start_engine(&root, port, preserve_metadata);
+        let path = root.join("photos/VRChat_2026-10-11_12-34-56.123_64x64.png");
+        fs::write(&path, original).unwrap();
+
+        let body = request_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let status = ui_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        commands_tx.send(Command::Stop).unwrap();
+        worker.join().unwrap().unwrap();
+        server.join().unwrap();
+        let unchanged = fs::read(&path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+
+        assert!(matches!(status, UiEvent::Status(_)));
+        assert_eq!(
+            body.windows(b"usr_test_author".len())
+                .any(|part| part == b"usr_test_author"),
+            preserve_metadata
+        );
+        if preserve_metadata {
+            assert!(body.windows(original.len()).any(|part| part == original));
+        }
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("Metadata Test World"));
+        assert!(body_text.contains("Taken · 2026-10-11 12:34:56"));
+        assert_eq!(unchanged, original);
+    }
 }
 
 #[test]
@@ -246,7 +292,7 @@ fn newly_created_photo_reaches_webhook_and_leaves_queue() {
     });
 
     let root = test_directory("flow");
-    let (commands_tx, ui_rx, worker) = start_engine(&root, port);
+    let (commands_tx, ui_rx, worker) = start_engine(&root, port, false);
 
     create_photo(&root);
     let (request_line, body) = request_rx.recv_timeout(Duration::from_secs(15)).unwrap();
@@ -294,7 +340,7 @@ fn rate_limited_photo_is_retried_and_completed() {
     });
 
     let root = test_directory("retry");
-    let (commands_tx, ui_rx, worker) = start_engine(&root, port);
+    let (commands_tx, ui_rx, worker) = start_engine(&root, port, false);
 
     let photo_path = create_photo(&root);
     let (first_request, first_response_at) =

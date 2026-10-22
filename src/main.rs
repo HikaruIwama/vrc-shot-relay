@@ -33,7 +33,7 @@ fn main() {
             config::resolve_watch_folder(&config, None, std::path::Path::new(""))?
         };
         config::validate_watch_folder(&folder)?;
-        engine::prepare(folder, directory.clone(), url)
+        engine::prepare(folder, directory.clone(), url, config.preserve_metadata)
     })();
     let engine = match startup {
         Ok(engine) => engine,
