@@ -1,2 +1,3 @@
 webhook_url = ""
 watch_folder = ""
+preserve_metadata = false
