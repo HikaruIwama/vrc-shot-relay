@@ -67,7 +67,8 @@ fn prepare_bytes(
     preserve_metadata: bool,
     limit: usize,
 ) -> Result<PreparedPhoto, String> {
-    let format = image::guess_format(&bytes).map_err(|error| error.to_string())?;
+    let format =
+        image::guess_format(&bytes).map_err(|error| format!("Could not open photo: {error}"))?;
     if preserve_metadata && bytes.len() <= limit {
         ImageReader::with_format(Cursor::new(&bytes), format)
             .decode()
@@ -79,7 +80,7 @@ fn prepare_bytes(
             ImageFormat::Gif => "gif",
             ImageFormat::WebP => "webp",
             ImageFormat::Tiff => "tiff",
-            _ => return Err("Unsupported photo format".into()),
+            _ => return Err("Could not open photo: Unsupported photo format".into()),
         };
         return Ok(PreparedPhoto {
             bytes,
@@ -88,13 +89,15 @@ fn prepare_bytes(
         });
     }
     if preserve_metadata && format == ImageFormat::Png {
-        move_png_xmp_before_idat(&mut bytes)?;
+        move_png_xmp_before_idat(&mut bytes)
+            .map_err(|error| format!("Could not open photo: {error}"))?;
     }
     let mut decoder = ImageReader::with_format(Cursor::new(bytes), format)
         .into_decoder()
         .map_err(|error| format!("Could not open photo: {error}"))?;
     let metadata = if preserve_metadata {
-        PhotoMetadata::read(&mut decoder)?
+        PhotoMetadata::read(&mut decoder)
+            .map_err(|error| format!("Could not open photo: {error}"))?
     } else {
         PhotoMetadata::default()
     };
@@ -113,6 +116,31 @@ mod tests {
     use super::*;
     use image::{GenericImageView, ImageBuffer, Rgba};
     use image::{ImageDecoder, ImageEncoder, ImageReader};
+
+    #[test]
+    fn format_detection_errors_identify_photo_opening() {
+        for preserve_metadata in [false, true] {
+            let result = prepare_bytes(Vec::new(), preserve_metadata, 8 * 1024 * 1024);
+
+            assert_eq!(
+                result.err(),
+                Some("Could not open photo: The image format could not be determined".into())
+            );
+        }
+    }
+
+    #[test]
+    fn png_chunk_errors_identify_photo_opening() {
+        let original = include_bytes!("../tests/fixtures/metadata-rgba.png");
+        let truncated = original[..34].to_vec();
+
+        let result = prepare_bytes(truncated, true, 0);
+
+        assert_eq!(
+            result.err(),
+            Some("Could not open photo: Truncated PNG chunk header".into())
+        );
+    }
 
     #[test]
     fn rejects_truncated_original_when_preserving_metadata() {
