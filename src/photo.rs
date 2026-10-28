@@ -1,7 +1,7 @@
 use crate::photo_metadata::{PhotoMetadata, move_png_xmp_before_idat};
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -69,6 +69,9 @@ fn prepare_bytes(
 ) -> Result<PreparedPhoto, String> {
     let format = image::guess_format(&bytes).map_err(|error| error.to_string())?;
     if preserve_metadata && bytes.len() <= limit {
+        ImageReader::with_format(Cursor::new(&bytes), format)
+            .decode()
+            .map_err(|error| format!("Could not open photo: {error}"))?;
         let extension = match format {
             ImageFormat::Png => "png",
             ImageFormat::Jpeg => "jpg",
@@ -95,6 +98,11 @@ fn prepare_bytes(
     } else {
         PhotoMetadata::default()
     };
+    let mut limits = Limits::default();
+    limits
+        .reserve(decoder.total_bytes())
+        .and_then(|()| decoder.set_limits(limits))
+        .map_err(|error| format!("Could not open photo: {error}"))?;
     let image = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("Could not open photo: {error}"))?;
     encode_under_limit(image, limit, &metadata)
@@ -105,6 +113,35 @@ mod tests {
     use super::*;
     use image::{GenericImageView, ImageBuffer, Rgba};
     use image::{ImageDecoder, ImageEncoder, ImageReader};
+
+    #[test]
+    fn rejects_truncated_original_when_preserving_metadata() {
+        let original = include_bytes!("../tests/fixtures/metadata-rgba.png");
+        let truncated = original[..33].to_vec();
+
+        let result = prepare_bytes(truncated, true, 8 * 1024 * 1024);
+
+        assert!(matches!(result, Err(error) if error.starts_with("Could not open photo:")));
+    }
+
+    #[test]
+    fn rejects_images_exceeding_decoded_memory_limit() {
+        let mut oversized = include_bytes!("../tests/fixtures/metadata-rgba.png").to_vec();
+        oversized[16..20].copy_from_slice(&16_384u32.to_be_bytes());
+        oversized[20..24].copy_from_slice(&16_384u32.to_be_bytes());
+        oversized[29..33].copy_from_slice(&[169, 200, 16, 132]);
+
+        for (preserve_metadata, limit) in
+            [(false, 8 * 1024 * 1024), (true, 0), (true, 8 * 1024 * 1024)]
+        {
+            let result = prepare_bytes(oversized.clone(), preserve_metadata, limit);
+
+            assert_eq!(
+                result.err(),
+                Some("Could not open photo: Memory limit exceeded".into())
+            );
+        }
+    }
 
     #[test]
     fn conversion_preserves_xmp_after_idat() {
