@@ -111,22 +111,42 @@ pub fn run(engine: Engine, commands: Receiver<Command>, ui: Sender<UiEvent>) -> 
                 .get(&path)
                 .is_none_or(|ready| Instant::now() >= *ready)
         {
-            if !stability.ready(&path) {
+            let paths = queue.group(&path);
+            if paths.iter().any(|candidate| {
+                ready_at
+                    .get(candidate)
+                    .is_some_and(|ready| Instant::now() < *ready)
+            }) {
                 thread::sleep(Duration::from_millis(200));
                 continue;
             }
-            let result = photo::prepare_file(&path)
+            let stable = paths
+                .iter()
+                .map(|candidate| stability.ready(candidate))
+                .collect::<Vec<_>>();
+            if stable.contains(&false) {
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            let result = paths
+                .iter()
+                .map(|candidate| photo::prepare_file(candidate))
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(discord::SendError::new)
                 .and_then(|prepared| {
-                    let world = metadata::read_world(&path);
+                    let world = paths
+                        .iter()
+                        .find_map(|candidate| metadata::read_world(candidate));
                     let captured_at = metadata::capture_time(&path);
                     discord.send(prepared, world.as_ref(), captured_at.as_deref())
                 });
             match result {
                 Ok(()) => {
-                    queue.complete_front()?;
-                    ready_at.remove(&path);
-                    stability.forget(&path);
+                    queue.complete_group(&paths)?;
+                    for candidate in &paths {
+                        ready_at.remove(candidate);
+                        stability.forget(candidate);
+                    }
                     failures = 0;
                     last_error = None;
                     let _ = ui.send(UiEvent::Status("Watching photos".into()));

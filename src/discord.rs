@@ -86,18 +86,39 @@ impl Discord {
 
     pub fn send(
         &self,
-        photo: PreparedPhoto,
+        photos: Vec<PreparedPhoto>,
         world: Option<&WorldInfo>,
         captured_at: Option<&str>,
     ) -> Result<(), SendError> {
-        let payload = message_payload(world, captured_at, photo.extension);
-        let file = multipart::Part::bytes(photo.bytes)
-            .file_name(format!("photo.{}", photo.extension))
-            .mime_str(photo.mime)
-            .map_err(|error| SendError::new(error.to_string()))?;
-        let form = multipart::Form::new()
-            .text("payload_json", payload.to_string())
-            .part("files[0]", file);
+        let mut embeds = Vec::new();
+        let mut form = multipart::Form::new();
+        for (index, photo) in photos.into_iter().enumerate() {
+            let name = if index == 0 {
+                format!("photo.{}", photo.extension)
+            } else {
+                format!("photo-{index}.{}", photo.extension)
+            };
+            if world.is_some() {
+                let payload = message_payload(world, captured_at, photo.extension);
+                let mut embed = if index == 0 {
+                    payload["embeds"][0].clone()
+                } else {
+                    json!({})
+                };
+                embed["image"] = json!({"url": format!("attachment://{name}")});
+                embeds.push(embed);
+            }
+            let file = multipart::Part::bytes(photo.bytes)
+                .file_name(name)
+                .mime_str(photo.mime)
+                .map_err(|error| SendError::new(error.to_string()))?;
+            form = form.part(format!("files[{index}]"), file);
+        }
+        let mut payload = json!({"allowed_mentions": {"parse": []}});
+        if !embeds.is_empty() {
+            payload["embeds"] = json!(embeds);
+        }
+        form = form.text("payload_json", payload.to_string());
         let mut url = self.url.clone();
         url.query_pairs_mut().append_pair("wait", "true");
         let response = self

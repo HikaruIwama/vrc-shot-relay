@@ -231,7 +231,7 @@ fn missing_folder_is_reported_before_watching_photos() {
 }
 
 #[test]
-fn newly_created_photo_reaches_webhook_and_leaves_queue() {
+fn multilayer_photo_reaches_webhook_in_one_post_and_leaves_queue() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (request_tx, request_rx) = mpsc::channel();
@@ -249,6 +249,14 @@ fn newly_created_photo_reaches_webhook_and_leaves_queue() {
     let (commands_tx, ui_rx, worker) = start_engine(&root, port);
 
     create_photo(&root);
+    for suffix in ["UI", "CustomLayer", "Environment"] {
+        let original = root.join("photos/VRChat_2026-10-11_12-34-56.123_64x64.png");
+        fs::copy(
+            &original,
+            original.with_file_name(format!("VRChat_2026-10-11_12-34-56.123_64x64_{suffix}.png")),
+        )
+        .unwrap();
+    }
     let (request_line, body) = request_rx.recv_timeout(Duration::from_secs(15)).unwrap();
     let status = ui_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     commands_tx.send(Command::Stop).unwrap();
@@ -259,6 +267,7 @@ fn newly_created_photo_reaches_webhook_and_leaves_queue() {
     assert!(request_line.contains("wait=true"));
     let body = String::from_utf8_lossy(&body);
     assert!(body.contains("files[0]"));
+    assert!(body.contains("files[3]"));
     assert!(body.contains("allowed_mentions"));
     assert!(!body.contains("\"embeds\""));
     assert!(matches!(status, UiEvent::Status(_)));
@@ -320,6 +329,43 @@ fn rate_limited_photo_is_retried_and_completed() {
 
     assert!(matches!(status, UiEvent::Status(_)));
     assert!(pending_after_success.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn newly_created_photo_reaches_webhook_and_leaves_queue() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (request_tx, request_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        accept_verification(&listener);
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        request_tx.send(request).unwrap();
+    });
+
+    let root = test_directory("flow");
+    let (commands_tx, ui_rx, worker) = start_engine(&root, port);
+
+    create_photo(&root);
+    let (request_line, body) = request_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+    let status = ui_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    commands_tx.send(Command::Stop).unwrap();
+    worker.join().unwrap().unwrap();
+    server.join().unwrap();
+    let pending = pending_photos(&root);
+
+    assert!(request_line.contains("wait=true"));
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("files[0]"));
+    assert!(body.contains("allowed_mentions"));
+    assert!(!body.contains("\"embeds\""));
+    assert!(matches!(status, UiEvent::Status(_)));
+    assert!(pending.is_empty());
 
     fs::remove_dir_all(root).unwrap();
 }
