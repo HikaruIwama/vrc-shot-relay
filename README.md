@@ -7,3 +7,5 @@ A tray app that posts new VRChat photos to Discord, with world info when availab
 3. Run `vrc-shot-relay.exe`.
 
 Leave `watch_folder` empty to detect your VRChat photo folder automatically.
+
+Set `preserve_metadata = true` in `config.toml` to retain supported photo metadata.

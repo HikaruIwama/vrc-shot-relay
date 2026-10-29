@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub webhook_url: String,
     pub watch_folder: String,
+    pub preserve_metadata: bool,
 }
 
 pub fn resolve_watch_folder(
@@ -89,6 +90,25 @@ pub fn webhook_url(config: &Config) -> Result<reqwest::Url, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_preservation_can_be_enabled_in_config() {
+        let config: Config = toml::from_str("preserve_metadata = true").unwrap();
+        let saved = toml::Value::try_from(config).unwrap();
+
+        assert_eq!(
+            saved.get("preserve_metadata"),
+            Some(&toml::Value::Boolean(true))
+        );
+    }
+
+    #[test]
+    fn omitted_metadata_setting_keeps_stripping_enabled() {
+        let config: Config = toml::from_str("watch_folder = ''").unwrap();
+
+        assert!(!config.preserve_metadata);
+        assert!(!Config::default().preserve_metadata);
+    }
 
     #[test]
     fn missing_webhook_prevents_startup() {
