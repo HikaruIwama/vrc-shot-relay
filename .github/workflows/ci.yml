@@ -23,7 +23,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - uses: jdx/mise-action@v5.2.3
         with:
-          version: 2026.10.20
+          version: 2026.10.21
           github_token: ${{ github.token }}
       - uses: actions/cache@v6.1.0
         with:
