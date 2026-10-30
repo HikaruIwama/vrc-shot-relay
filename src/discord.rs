@@ -103,7 +103,7 @@ impl Discord {
                 let mut embed = if index == 0 {
                     payload["embeds"][0].clone()
                 } else {
-                    json!({})
+                    json!({"url": payload["embeds"][0]["url"]})
                 };
                 embed["image"] = json!({"url": format!("attachment://{name}")});
                 embeds.push(embed);
@@ -160,6 +160,88 @@ impl Discord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiple_images_share_world_url_for_gallery() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = reqwest::Url::parse(&format!(
+            "http://{}/webhook",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            let body = String::from_utf8(body).unwrap();
+            serde_json::from_str::<serde_json::Value>(
+                body.lines()
+                    .find(|line| line.starts_with("{\"allowed_mentions\""))
+                    .unwrap(),
+            )
+            .unwrap()
+        });
+        let photos = ["png", "jpg"]
+            .into_iter()
+            .map(|extension| PreparedPhoto {
+                bytes: vec![1, 2, 3],
+                mime: if extension == "png" {
+                    "image/png"
+                } else {
+                    "image/jpeg"
+                },
+                extension,
+            })
+            .collect();
+        let world = WorldInfo {
+            name: "Test World".into(),
+            id: "wrld_f100c62e-3121-4380-9452-d5601269f49a".into(),
+        };
+        assert!(
+            Discord::new(url)
+                .unwrap()
+                .send(photos, Some(&world), Some("2026-10-11 12:34:56"))
+                .is_ok()
+        );
+        let payload = server.join().unwrap();
+        let embeds = payload["embeds"].as_array().unwrap();
+        assert_eq!(embeds.len(), 2);
+        assert_eq!(
+            embeds[0]["url"],
+            "https://vrchat.com/home/world/wrld_f100c62e-3121-4380-9452-d5601269f49a"
+        );
+        assert_eq!(
+            embeds[1],
+            json!({
+                "url": embeds[0]["url"],
+                "image": {"url": "attachment://photo-1.jpg"}
+            })
+        );
+        assert_eq!(embeds[0]["image"]["url"], "attachment://photo.png");
+        assert_eq!(embeds[0]["title"], "Test World");
+        assert_eq!(embeds[0]["footer"]["text"], "Taken · 2026-10-11 12:34:56");
+    }
 
     #[test]
     fn photo_without_world_has_no_embed() {
