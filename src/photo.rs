@@ -50,6 +50,26 @@ pub fn prepare_file(path: &Path) -> Result<PreparedPhoto, String> {
     encode_under_limit(image, 8 * 1024 * 1024)
 }
 
+pub fn capture_key(path: &Path) -> std::path::PathBuf {
+    let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+        return path.to_owned();
+    };
+    let parts: Vec<_> = stem.split('_').collect();
+    if parts.len() < 4
+        || parts[0] != "VRChat"
+        || crate::metadata::capture_time_from_name(path).is_none()
+    {
+        return path.to_owned();
+    }
+    let Some((width, height)) = parts[3].split_once('x') else {
+        return path.to_owned();
+    };
+    if width.parse::<u32>().is_err() || height.parse::<u32>().is_err() {
+        return path.to_owned();
+    }
+    path.with_file_name(parts[..4].join("_"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

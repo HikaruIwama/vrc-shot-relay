@@ -45,12 +45,26 @@ impl Queue {
         self.state.pending.front()
     }
 
-    pub fn complete_front(&mut self) -> Result<(), String> {
-        let Some(front) = self.state.pending.pop_front() else {
-            return Ok(());
-        };
+    pub fn group(&self, path: &Path) -> Vec<PathBuf> {
+        let key = crate::photo::capture_key(path);
+        let mut paths: Vec<_> = self
+            .state
+            .pending
+            .iter()
+            .filter(|candidate| crate::photo::capture_key(candidate) == key)
+            .cloned()
+            .collect();
+        paths
+            .sort_by_key(|candidate| (candidate.file_stem() != key.file_name(), candidate.clone()));
+        paths.truncate(10);
+        paths
+    }
+
+    pub fn complete_group(&mut self, paths: &[PathBuf]) -> Result<(), String> {
+        let previous = self.state.pending.clone();
+        self.state.pending.retain(|path| !paths.contains(path));
         if let Err(error) = self.save() {
-            self.state.pending.push_front(front);
+            self.state.pending = previous;
             return Err(error);
         }
         Ok(())
@@ -89,6 +103,28 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn groups_unknown_suffixes_with_original_first_and_keeps_other_captures_separate() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let file = std::env::temp_dir().join(format!("vrc-shot-relay-group-{stamp}.json"));
+        let mut queue = Queue::load(&file).unwrap();
+        let original = PathBuf::from("VRChat_2026-10-28_20-03-48.059_1920x1080.png");
+        let custom =
+            original.with_file_name("VRChat_2026-10-28_20-03-48.059_1920x1080_Anything_New.png");
+        let other = original.with_file_name("VRChat_2026-10-28_20-03-49.059_1920x1080.png");
+        queue.enqueue(custom.clone()).unwrap();
+        queue.enqueue(other.clone()).unwrap();
+        queue.enqueue(original.clone()).unwrap();
+        let paths = queue.group(&custom);
+        assert_eq!(paths, vec![original, custom]);
+        queue.complete_group(&paths).unwrap();
+        assert_eq!(Queue::load(&file).unwrap().front(), Some(&other));
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
     fn pending_photo_survives_restart_without_duplicate() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -109,7 +145,7 @@ mod tests {
         let mut queue = Queue::load(&file).unwrap();
         assert_eq!(queue.front(), Some(&photo));
 
-        queue.complete_front().unwrap();
+        queue.complete_group(std::slice::from_ref(&photo)).unwrap();
         let reloaded = Queue::load(&file).unwrap();
 
         assert_eq!(reloaded.front(), None);
