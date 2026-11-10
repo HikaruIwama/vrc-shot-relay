@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - uses: jdx/mise-action@v5.2.7
         with:
-          version: 2026.11.2
+          version: 2026.11.3
           github_token: ${{ github.token }}
       - name: Verify release tag
         shell: pwsh
