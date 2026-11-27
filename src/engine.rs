@@ -8,6 +8,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Name of the error log written next to the app.
+pub const LOG_FILE_NAME: &str = "relay.log";
+
 pub enum Command {
     Pause(bool),
     Stop,
@@ -202,7 +205,7 @@ pub fn log_error(directory: &Path, error: &str) {
     if let Ok(mut log) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(directory.join("relay.log"))
+        .open(directory.join(LOG_FILE_NAME))
     {
         let timestamp = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)

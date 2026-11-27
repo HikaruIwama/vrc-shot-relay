@@ -4,6 +4,8 @@ mod autostart;
 mod config;
 mod dialog;
 mod instance;
+mod locations;
+mod shell;
 mod tray;
 
 use std::path::PathBuf;
@@ -23,7 +25,7 @@ fn main() {
     };
     let (ui_tx, ui_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
-    let startup = (|| -> Result<engine::Engine, String> {
+    let startup = (|| -> Result<(engine::Engine, PathBuf), String> {
         let config = config::load_or_create(&directory)?;
         let url = config::webhook_url(&config)?;
         let upload_limit = config::upload_limit(&config)?;
@@ -35,15 +37,16 @@ fn main() {
             config::resolve_watch_folder(&config, None, std::path::Path::new(""))?
         };
         config::validate_watch_folder(&folder)?;
-        engine::prepare(folder, directory.clone(), url, upload_limit)
+        let engine = engine::prepare(folder.clone(), directory.clone(), url, upload_limit)?;
+        Ok((engine, folder))
     })();
-    let engine = match startup {
-        Ok(engine) => engine,
+    let (engine, folder) = match startup {
+        Ok(started) => started,
         Err(error) => {
             engine::log_error(&directory, &error);
             dialog::show_startup_error(&format!(
                 "{error}\n\nCheck the settings in:\n{}\n\nCorrect the problem, then restart VRC Shot Relay.",
-                directory.join("config.toml").display()
+                directory.join(config::FILE_NAME).display()
             ));
             return;
         }
@@ -55,7 +58,8 @@ fn main() {
             engine::report_error(&work_directory, &events, &error);
         }
     });
-    if let Err(error) = tray::run(command_tx.clone(), ui_rx, "Starting".to_string()) {
+    let locations = locations::Locations::new(&directory, folder);
+    if let Err(error) = tray::run(command_tx.clone(), ui_rx, "Starting".to_string(), locations) {
         let _ = command_tx.send(engine::Command::Stop);
         let error = format!("Could not start tray: {error}");
         engine::log_error(&directory, &error);

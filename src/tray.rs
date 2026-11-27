@@ -1,8 +1,11 @@
 use crate::autostart::RunKey;
+use crate::locations::Locations;
+use crate::shell;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use vrc_shot_relay::engine::{Command, UiEvent};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -15,6 +18,9 @@ const TRAY_MESSAGE: u32 = WM_APP + 1;
 const PAUSE_ID: usize = 1;
 const EXIT_ID: usize = 2;
 const STARTUP_ID: usize = 3;
+const OPEN_SETTINGS_ID: usize = 4;
+const OPEN_LOG_ID: usize = 5;
+const OPEN_PHOTOS_ID: usize = 6;
 static STATE: OnceLock<Mutex<TrayState>> = OnceLock::new();
 
 struct TrayState {
@@ -22,12 +28,14 @@ struct TrayState {
     events: Receiver<UiEvent>,
     status: String,
     paused: bool,
+    locations: Locations,
 }
 
 pub fn run(
     sender: Sender<Command>,
     events: Receiver<UiEvent>,
     status: String,
+    locations: Locations,
 ) -> Result<(), String> {
     STATE
         .set(Mutex::new(TrayState {
@@ -35,9 +43,12 @@ pub fn run(
             events,
             status,
             paused: false,
+            locations,
         }))
         .map_err(|_| "Tray already running".to_string())?;
     unsafe {
+        // ShellExecuteW, used by the open menu items, requires COM on the calling thread.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let module = GetModuleHandleW(None).map_err(|error| error.to_string())?;
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
@@ -100,6 +111,10 @@ unsafe extern "system" fn window_proc(
         WM_COMMAND => {
             let id = wparam.0 & 0xffff;
             if let Some(state) = STATE.get() {
+                if let Some(result) = open_location(state, id) {
+                    report(hwnd, result);
+                    return LRESULT(0);
+                }
                 let mut state = state.lock().unwrap();
                 match id {
                     PAUSE_ID => {
@@ -189,6 +204,31 @@ fn show_error(hwnd: HWND, error: &str) {
     }
 }
 
+/// Returns `None` when `id` is not an open command.
+/// The lock is released before opening, because the shell may dispatch messages to this window while it runs.
+fn open_location(state: &Mutex<TrayState>, id: usize) -> Option<Result<(), String>> {
+    let (path, is_folder) = {
+        let state = state.lock().unwrap();
+        match id {
+            OPEN_SETTINGS_ID => (state.locations.config.clone(), false),
+            OPEN_LOG_ID => (state.locations.log.clone(), false),
+            OPEN_PHOTOS_ID => (state.locations.photos.clone(), true),
+            _ => return None,
+        }
+    };
+    Some(if is_folder {
+        shell::open_folder(&path)
+    } else {
+        shell::open_text_file(&path)
+    })
+}
+
+fn report(hwnd: HWND, result: Result<(), String>) {
+    if let Err(error) = result {
+        show_error(hwnd, &error);
+    }
+}
+
 fn startup_enabled() -> Result<bool, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     RunKey::current_user().is_enabled(&exe)
@@ -209,9 +249,13 @@ fn toggle_startup(hwnd: HWND) {
 
 fn show_menu(hwnd: HWND) {
     let Some(state) = STATE.get() else { return };
-    let (status, paused) = {
+    let (status, paused, log_available) = {
         let state = state.lock().unwrap();
-        (state.status.clone(), state.paused)
+        (
+            state.status.clone(),
+            state.paused,
+            state.locations.log_available(),
+        )
     };
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -229,6 +273,15 @@ fn show_menu(hwnd: HWND) {
             Err(_) => MF_STRING | MF_GRAYED,
         };
         let _ = AppendMenuW(menu, startup, STARTUP_ID, w!("Start with Windows"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, OPEN_SETTINGS_ID, w!("Open settings"));
+        let log = if log_available {
+            MF_STRING
+        } else {
+            MF_STRING | MF_GRAYED
+        };
+        let _ = AppendMenuW(menu, log, OPEN_LOG_ID, w!("Open log"));
+        let _ = AppendMenuW(menu, MF_STRING, OPEN_PHOTOS_ID, w!("Open photo folder"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, EXIT_ID, w!("Exit"));
         let mut point = POINT::default();

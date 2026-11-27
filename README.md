@@ -11,3 +11,5 @@ Leave `watch_folder` empty to detect your VRChat photo folder automatically.
 Photos larger than `max_upload_mb` (default 8, allowed 1 to 100) are shrunk before posting. Raise it to match your server's Discord upload limit.
 
 To start VRC Shot Relay when you sign in to Windows, select **Start with Windows** in the tray menu. Select it again to turn it off. If you move the app folder, turn it on again from the new location.
+
+Use **Open settings**, **Open log**, and **Open photo folder** in the tray menu to reach `config.toml`, `relay.log`, and the watched folder. **Open log** is available after the first error is logged.
