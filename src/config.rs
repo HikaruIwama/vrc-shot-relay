@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const FILE_NAME: &str = "config.toml";
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
@@ -43,7 +45,7 @@ pub fn resolve_watch_folder(
 }
 
 pub fn load_or_create(directory: &Path) -> Result<Config, String> {
-    let path = directory.join("config.toml");
+    let path = directory.join(FILE_NAME);
     if !path.exists() {
         let template =
             toml::to_string_pretty(&Config::default()).map_err(|error| error.to_string())?;
