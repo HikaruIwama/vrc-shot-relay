@@ -1,3 +1,4 @@
+use crate::autostart::RunKey;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use vrc_shot_relay::engine::{Command, UiEvent};
@@ -13,6 +14,7 @@ use windows::core::{PCWSTR, w};
 const TRAY_MESSAGE: u32 = WM_APP + 1;
 const PAUSE_ID: usize = 1;
 const EXIT_ID: usize = 2;
+const STARTUP_ID: usize = 3;
 static STATE: OnceLock<Mutex<TrayState>> = OnceLock::new();
 
 struct TrayState {
@@ -111,6 +113,7 @@ unsafe extern "system" fn window_proc(
                         .into();
                         update_tip(hwnd, &state.status);
                     }
+                    STARTUP_ID => toggle_startup(hwnd),
                     EXIT_ID => {
                         let _ = state.sender.send(Command::Stop);
                         let _ = unsafe { DestroyWindow(hwnd) };
@@ -186,6 +189,24 @@ fn show_error(hwnd: HWND, error: &str) {
     }
 }
 
+fn startup_enabled() -> Result<bool, String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    RunKey::current_user().is_enabled(&exe)
+}
+
+fn toggle_startup(hwnd: HWND) {
+    let result = std::env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|exe| {
+            let key = RunKey::current_user();
+            let enabled = key.is_enabled(&exe)?;
+            key.set_enabled(&exe, !enabled)
+        });
+    if let Err(error) = result {
+        show_error(hwnd, &error);
+    }
+}
+
 fn show_menu(hwnd: HWND) {
     let Some(state) = STATE.get() else { return };
     let (status, paused) = {
@@ -202,6 +223,12 @@ fn show_menu(hwnd: HWND) {
             PAUSE_ID,
             if paused { w!("Resume") } else { w!("Pause") },
         );
+        let startup = match startup_enabled() {
+            Ok(true) => MF_STRING | MF_CHECKED,
+            Ok(false) => MF_STRING,
+            Err(_) => MF_STRING | MF_GRAYED,
+        };
+        let _ = AppendMenuW(menu, startup, STARTUP_ID, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, EXIT_ID, w!("Exit"));
         let mut point = POINT::default();

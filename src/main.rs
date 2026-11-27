@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod autostart;
 mod config;
 mod dialog;
 mod instance;
