@@ -1,2 +1,3 @@
 webhook_url = ""
 watch_folder = ""
+max_upload_mb = 8
