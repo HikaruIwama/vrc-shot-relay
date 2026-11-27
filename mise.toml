@@ -1,7 +1,7 @@
 [tools]
 cargo-deny = "0.22.0"
 "github:EmbarkStudios/cargo-about" = "0.9.3"
-lefthook = "2.2.2"
+lefthook = "2.2.3"
 rust = "1.100.0"
 
 [tasks]
