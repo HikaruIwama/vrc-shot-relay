@@ -2,11 +2,22 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub webhook_url: String,
     pub watch_folder: String,
+    pub max_upload_mb: u32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            webhook_url: String::new(),
+            watch_folder: String::new(),
+            max_upload_mb: 8,
+        }
+    }
 }
 
 pub fn resolve_watch_folder(
@@ -84,6 +95,11 @@ pub fn webhook_url(config: &Config) -> Result<reqwest::Url, String> {
         return Err("Webhook URL must be a Discord HTTPS webhook".into());
     }
     Ok(url)
+}
+
+pub fn upload_limit(config: &Config) -> Result<vrc_shot_relay::UploadLimit, String> {
+    vrc_shot_relay::UploadLimit::from_megabytes(config.max_upload_mb)
+        .map_err(|error| format!("{error}. Set max_upload_mb in config.toml, then restart."))
 }
 
 #[cfg(test)]
@@ -192,6 +208,42 @@ mod tests {
         let config: Config = toml::from_str(text).unwrap();
 
         assert_eq!(config.watch_folder, "");
+    }
+
+    #[test]
+    fn configured_upload_limit_is_used() {
+        let config = Config {
+            max_upload_mb: 25,
+            ..Config::default()
+        };
+
+        let limit = upload_limit(&config).unwrap();
+
+        assert_eq!(limit.bytes(), 25 * 1024 * 1024);
+    }
+
+    #[test]
+    fn out_of_range_upload_limit_prevents_startup() {
+        let config = Config {
+            max_upload_mb: 0,
+            ..Config::default()
+        };
+
+        let result = upload_limit(&config);
+
+        assert_eq!(
+            result.unwrap_err(),
+            "max_upload_mb must be between 1 and 100, but was 0. Set max_upload_mb in config.toml, then restart."
+        );
+    }
+
+    #[test]
+    fn omitted_upload_limit_keeps_previous_8mb_limit() {
+        let text = "webhook_url = 'https://discord.com/api/webhooks/123/token'";
+
+        let config: Config = toml::from_str(text).unwrap();
+
+        assert_eq!(config.max_upload_mb, 8);
     }
 
     #[test]

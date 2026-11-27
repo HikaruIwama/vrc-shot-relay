@@ -1,4 +1,4 @@
-use crate::{discord, metadata, photo, queue::Queue, watch};
+use crate::{UploadLimit, discord, metadata, photo, queue::Queue, watch};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -27,9 +27,15 @@ pub struct Engine {
     watcher: notify::RecommendedWatcher,
     events_rx: Receiver<notify::Result<notify::Event>>,
     ready_at: HashMap<PathBuf, Instant>,
+    upload_limit: UploadLimit,
 }
 
-pub fn prepare(folder: PathBuf, directory: PathBuf, url: reqwest::Url) -> Result<Engine, String> {
+pub fn prepare(
+    folder: PathBuf,
+    directory: PathBuf,
+    url: reqwest::Url,
+    upload_limit: UploadLimit,
+) -> Result<Engine, String> {
     let mut seen = HashSet::new();
     watch::discover_images(&folder, &mut seen)?;
     let mut queue = Queue::load(&directory.join("state.json"))?;
@@ -47,6 +53,7 @@ pub fn prepare(folder: PathBuf, directory: PathBuf, url: reqwest::Url) -> Result
         watcher,
         events_rx,
         ready_at,
+        upload_limit,
     })
 }
 
@@ -60,6 +67,7 @@ pub fn run(engine: Engine, commands: Receiver<Command>, ui: Sender<UiEvent>) -> 
         watcher: _watcher,
         events_rx,
         mut ready_at,
+        upload_limit,
     } = engine;
     let mut stability = watch::FileStability::default();
     let _ = ui.send(UiEvent::Status("Watching photos".into()));
@@ -130,7 +138,7 @@ pub fn run(engine: Engine, commands: Receiver<Command>, ui: Sender<UiEvent>) -> 
             }
             let result = paths
                 .iter()
-                .map(|candidate| photo::prepare_file(candidate))
+                .map(|candidate| photo::prepare_file(candidate, upload_limit))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(discord::SendError::new)
                 .and_then(|prepared| {

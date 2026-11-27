@@ -25,6 +25,7 @@ fn main() {
     let startup = (|| -> Result<engine::Engine, String> {
         let config = config::load_or_create(&directory)?;
         let url = config::webhook_url(&config)?;
+        let upload_limit = config::upload_limit(&config)?;
         let folder = if config.watch_folder.is_empty() {
             let pictures = pictures_folder()?;
             let vrchat_config = read_vrchat_config()?;
@@ -33,7 +34,7 @@ fn main() {
             config::resolve_watch_folder(&config, None, std::path::Path::new(""))?
         };
         config::validate_watch_folder(&folder)?;
-        engine::prepare(folder, directory.clone(), url)
+        engine::prepare(folder, directory.clone(), url, upload_limit)
     })();
     let engine = match startup {
         Ok(engine) => engine,

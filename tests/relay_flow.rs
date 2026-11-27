@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use vrc_shot_relay::UploadLimit;
 use vrc_shot_relay::engine::{self, Command, UiEvent};
 
 fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
@@ -52,9 +53,25 @@ fn test_directory(name: &str) -> PathBuf {
     root
 }
 
+fn default_limit() -> UploadLimit {
+    UploadLimit::from_megabytes(8).unwrap()
+}
+
 fn start_engine(
     root: &Path,
     port: u16,
+) -> (
+    Sender<Command>,
+    Receiver<UiEvent>,
+    JoinHandle<Result<(), String>>,
+) {
+    start_engine_with_limit(root, port, default_limit())
+}
+
+fn start_engine_with_limit(
+    root: &Path,
+    port: u16,
+    upload_limit: UploadLimit,
 ) -> (
     Sender<Command>,
     Receiver<UiEvent>,
@@ -65,7 +82,7 @@ fn start_engine(
     let url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/api/webhooks/test")).unwrap();
     let folder = root.join("photos");
     let directory = root.to_owned();
-    let engine = engine::prepare(folder, directory, url).unwrap();
+    let engine = engine::prepare(folder, directory, url, upload_limit).unwrap();
     let worker = thread::spawn(move || engine::run(engine, commands_rx, ui_tx));
     assert!(matches!(
         ui_rx.recv_timeout(Duration::from_secs(5)),
@@ -114,7 +131,7 @@ fn rejected_webhook_prevents_startup_without_posting() {
         ))
         .unwrap();
 
-        let result = engine::prepare(root.join("photos"), root.clone(), url);
+        let result = engine::prepare(root.join("photos"), root.clone(), url, default_limit());
 
         assert!(
             matches!(result, Err(error) if error == format!("Could not verify Discord webhook: HTTP {status}. Check webhook_url in config.toml, then restart."))
@@ -137,7 +154,7 @@ fn unreachable_webhook_prevents_startup_without_exposing_url() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, default_limit());
 
     assert!(
         matches!(result, Err(error) if error == "Could not verify Discord webhook: network request failed. Check your connection, then restart.")
@@ -162,7 +179,7 @@ fn unresponsive_webhook_prevents_startup_with_timeout() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, default_limit());
 
     finish_tx.send(()).unwrap();
     let (request, body) = server.join().unwrap();
@@ -191,7 +208,7 @@ fn webhook_redirect_is_rejected_without_following_it() {
     ))
     .unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, default_limit());
 
     server.join().unwrap();
     assert!(
@@ -211,7 +228,7 @@ fn invalid_queue_is_reported_before_watching_photos() {
     fs::write(root.join("state.json"), "invalid JSON").unwrap();
     let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
 
-    let result = engine::prepare(root.join("photos"), root.clone(), url);
+    let result = engine::prepare(root.join("photos"), root.clone(), url, default_limit());
 
     assert!(result.is_err_and(|error| error.starts_with("Invalid state file:")));
     fs::remove_dir_all(root).unwrap();
@@ -223,7 +240,7 @@ fn missing_folder_is_reported_before_watching_photos() {
     let folder = root.join("missing");
     let url = reqwest::Url::parse("http://127.0.0.1:1/api/webhooks/test").unwrap();
 
-    let result = engine::prepare(folder.clone(), root.clone(), url);
+    let result = engine::prepare(folder.clone(), root.clone(), url, default_limit());
 
     assert!(result.is_err_and(|error| error.starts_with("Could not scan photos:")));
     assert!(!folder.exists());
@@ -366,6 +383,49 @@ fn newly_created_photo_reaches_webhook_and_leaves_queue() {
     assert!(!body.contains("\"embeds\""));
     assert!(matches!(status, UiEvent::Status(_)));
     assert!(pending.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn photo_is_shrunk_to_configured_upload_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (request_tx, request_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        accept_verification(&listener);
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        request_tx.send(request).unwrap();
+    });
+    let root = test_directory("upload-limit");
+    let mut seed = 1u32;
+    let noise = ImageBuffer::from_fn(1024, 1024, |_, _| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let [r, g, b, _] = seed.to_le_bytes();
+        Rgba([r, g, b, 255])
+    });
+    let source = root.join("noise.png");
+    DynamicImage::ImageRgba8(noise).save(&source).unwrap();
+    let original_size = fs::metadata(&source).unwrap().len();
+    let limit = UploadLimit::from_megabytes(1).unwrap();
+    let (commands_tx, _ui_rx, worker) = start_engine_with_limit(&root, port, limit);
+
+    fs::rename(
+        &source,
+        root.join("photos/VRChat_2026-10-11_12-34-56.123_1024x1024.png"),
+    )
+    .unwrap();
+    let (_, body) = request_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    commands_tx.send(Command::Stop).unwrap();
+    worker.join().unwrap().unwrap();
+    server.join().unwrap();
+
+    assert!(original_size > 1024 * 1024 && original_size < 8 * 1024 * 1024);
+    assert!(body.len() < 1024 * 1024 + 4096);
 
     fs::remove_dir_all(root).unwrap();
 }

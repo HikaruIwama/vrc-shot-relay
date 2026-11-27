@@ -7,3 +7,5 @@ A tray app that posts new VRChat photos to Discord, with world info when availab
 3. Run `vrc-shot-relay.exe`.
 
 Leave `watch_folder` empty to detect your VRChat photo folder automatically.
+
+Photos larger than `max_upload_mb` (default 8, allowed 1 to 100) are shrunk before posting. Raise it to match your server's Discord upload limit.
