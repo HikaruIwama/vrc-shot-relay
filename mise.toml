@@ -1,5 +1,5 @@
 [tools]
-cargo-deny = "0.22.0"
+cargo-deny = "0.22.1"
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 lefthook = "2.2.3"
 rust = "1.100.0"
